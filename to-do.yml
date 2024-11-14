@@ -2,7 +2,6 @@ TODO:
   Groups (left pane):
     - control:
         - Enter: does not expand/collapse
-        - Navigate: up/down scroll past the last line
 
   Entries (right pane):
     - color: highlight only current index
