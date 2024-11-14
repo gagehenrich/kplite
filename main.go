@@ -173,7 +173,7 @@ func buildGroupHierarchy(group gokeepasslib.Group) *GroupNode {
 
     node := &GroupNode{
         Name:      group.Name,
-        Expanded:  true,  // Default to expanded to help debug
+        Expanded:  false,
         Entries:   make([]Entry, 0),
         SubGroups: make([]*GroupNode, 0),
     }
@@ -335,7 +335,7 @@ func main() {
 
 
     // Update header to show new commands
-    stdscr.MovePrint(0, 0, "kplite [kdbx viewer] - (q: quit, shift: toggle passwords, arrows: navigate, enter: expand/collapse)")
+    stdscr.MovePrint(0, 0, "kplite [kdbx viewer] - (q: quit, [SPC]: toggle passwords, [/]: search, enter: expand/collapse)")
 	stdscr.Refresh()
 
     // Main loop
@@ -349,7 +349,7 @@ func main() {
         searchWin.Box(0, 0)
 
         groupWin.MovePrint(0, 2, "Groups")
-        detailWin.MovePrint(0, 2, "Entries")
+        detailWin.MovePrint(0, 2, "")
         searchWin.MovePrint(0, 2, fmt.Sprintf("Search: %s", state.searchQuery))
 
         visibleItems := getVisibleItems(rootGroup)
@@ -367,6 +367,7 @@ func main() {
         } else if selectedGroup != nil {
             entries = selectedGroup.Entries[state.entryScrollPos:]
         }
+        detailWin.MovePrint(0, 2, selectedGroup.Name)
 
         if state.focusedPane == 1 {
             detailWin.AttrOn(goncurses.ColorPair(1))
@@ -441,20 +442,25 @@ func main() {
                         state.entryScrollPos++
                     }
                 }
-        case goncurses.KEY_ENTER, '\r':
-            if state.focusedPane == 0 && state.selectedIndex >= 0 && state.selectedIndex < len(visibleItems) {
-                selectedGroup = visibleItems[state.selectedIndex].Group
-                selectedGroup.Expanded = !selectedGroup.Expanded
 
-                // Expand all parent groups to ensure visibility
-                parent := selectedGroup.Parent
-                for parent != nil {
-                    parent.Expanded = true
-                    parent = parent.Parent
+            case goncurses.KEY_ENTER, 10, 13:
+                if state.focusedPane == 0 && state.selectedIndex >= 0 && state.selectedIndex < len(visibleItems) {
+                    selectedGroup := visibleItems[state.selectedIndex].Group
+                    if selectedGroup != nil {
+                        log.Printf("Toggling group %s, current expanded state: %v", selectedGroup.Name, selectedGroup.Expanded)
+                        selectedGroup.Expanded = !selectedGroup.Expanded
+
+                        parent := selectedGroup.Parent
+                        for parent != nil {
+                            parent.Expanded = true
+                            parent = parent.Parent
+                        }
+
+                        state.entryScrollPos = 0
+
+                        log.Printf("New expanded state for group %s: %v", selectedGroup.Name, selectedGroup.Expanded)
+                    }
                 }
-
-                state.entryScrollPos = 0
-            }
         }
     }
 }
