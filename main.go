@@ -304,7 +304,7 @@ func main() {
 		log.Fatal("failed to create search window:", err)
 	}
 
-	stdscr.MovePrint(0, 0, "kplite [kdbx viewer] - (q: quit, s: search, arrows: navigate, enter: expand/collapse)")
+	stdscr.MovePrint(0, 0, "kplite [kdbx viewer] - (q: quit, arrows: navigate, enter: expand/collapse)")
 	stdscr.Refresh()
 
 	state := ViewState{
@@ -317,7 +317,7 @@ func main() {
     }
 
     // Update header to show new commands
-    stdscr.MovePrint(0, 0, "kplite [kdbx viewer] - (q: quit, s: search, p: toggle passwords, tab: switch focus, arrows: navigate, enter: expand/collapse)")
+    stdscr.MovePrint(0, 0, "kplite [kdbx viewer] - (q: quit, p: toggle passwords, arrows: navigate, enter: expand/collapse)")
 	stdscr.Refresh()
 
     // Main loop
@@ -373,13 +373,13 @@ func main() {
 			return
 		case 'p':
 			state.showPasswords = !state.showPasswords
-		case 's':
+		case '/':
 			state.inSearchMode = !state.inSearchMode
 			if state.inSearchMode {
-				searchWin.MovePrint(1, 1, "Enter search query: ")
+				searchWin.MovePrint(1, 1, "/   ")
 				searchWin.Refresh()
 				goncurses.Echo(true)
-				state.searchQuery = getString(searchWin, 1, 19, 30)
+				state.searchQuery = getString(searchWin, 1, 2, 130)
 				goncurses.Echo(false)
 				state.entryScrollPos = 0
 			} else {
@@ -422,8 +422,10 @@ func main() {
 
 				state.entryScrollPos = 0
 			}
-		case '\t':
-			state.focusedPane = (state.focusedPane + 1) % 2
+		case goncurses.KEY_LEFT:
+			state.focusedPane = 0
+		case goncurses.KEY_RIGHT:
+			state.focusedPane = 1
 		}
-	}
+    }
 }

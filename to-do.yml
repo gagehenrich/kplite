@@ -1,10 +1,15 @@
 TODO:
   Groups (left pane):
-    - cannot expand/compress groups
-    - cannot scroll past the last line (scrolls down but entries are not updated for scrolling)
+    - control:
+        - Enter: does not expand/collapse
+        - Navigate: up/down scroll past the last line
+
+  Entries (right pane):
+    - color: highlight only current index
+    - title: should be = active group
 
   Search:
-    - only applies to the Entry names, does not search by Groups
+    - search Groups, not Entries
 
   General:
     - Ugly. No color.
