@@ -1,0 +1,10 @@
+TODO:
+  Groups (left pane):
+    - cannot expand/compress groups
+    - cannot scroll past the last line (scrolls down but entries are not updated for scrolling)
+
+  Search:
+    - only applies to the Entry names, does not search by Groups
+
+  General:
+    - Ugly. No color.

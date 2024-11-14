@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"syscall"
 
-	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/tview"
+	"github.com/rthornton128/goncurses"
 	"github.com/tobischo/gokeepasslib/v3"
 	"golang.org/x/term"
 )
@@ -18,7 +18,29 @@ type Entry struct {
 	Password string
 	URL      string
 	Notes    string
-	Group    string
+}
+
+type GroupNode struct {
+	Name      string
+	Entries   []Entry
+	SubGroups []*GroupNode
+	Expanded  bool
+	Parent    *GroupNode
+}
+
+type VisibleItem struct {
+	Group    *GroupNode
+	Depth    int
+	Position int
+}
+
+type ViewState struct {
+	selectedIndex   int
+	entryScrollPos int
+	searchQuery    string
+	inSearchMode   bool
+    showPasswords  bool
+    focusedPane	   int	// 0=groups, 1=entries
 }
 
 func getPassword() (string, error) {
@@ -29,6 +51,189 @@ func getPassword() (string, error) {
 		return "", err
 	}
 	return string(bytePassword), nil
+}
+
+func getVisibleItems(root *GroupNode) []VisibleItem {
+	var items []VisibleItem
+	addVisibleItems(root, 0, &items)
+	return items
+}
+
+func addVisibleItems(group *GroupNode, depth int, items *[]VisibleItem) {
+	if group == nil {
+		return
+	}
+
+	*items = append(*items, VisibleItem{
+		Group:    group,
+		Depth:    depth,
+		Position: len(*items),
+	})
+
+	if group.Expanded {
+		for _, subGroup := range group.SubGroups {
+			addVisibleItems(subGroup, depth+1, items)
+		}
+	}
+}
+
+func displayGroups(win *goncurses.Window, items []VisibleItem, selectedIndex int) {
+	maxY, maxX := win.MaxYX()
+	if maxY <= 1 {
+		return
+	}
+
+	for i, item := range items {
+		if i+1 >= maxY-1 {
+			break
+		}
+		prefix := strings.Repeat("  ", item.Depth)
+		indicator := "-"
+		if len(item.Group.SubGroups) > 0 {
+			if item.Group.Expanded {
+				indicator = "+"
+			} else {
+				indicator = ">"
+			}
+		}
+
+		displayText := fmt.Sprintf("%s%s %s", prefix, indicator, item.Group.Name)
+		if i == selectedIndex {
+			win.AttrOn(goncurses.ColorPair(1))
+			win.MovePrint(i+1, 1, fmt.Sprintf("%-*s", maxX-2, displayText))
+			win.AttrOff(goncurses.ColorPair(1))
+		} else {
+			win.MovePrint(i+1, 1, displayText)
+		}
+	}
+}
+
+func displayEntries(win *goncurses.Window, entries []Entry, width int, scrollPos int, showPasswords bool) {
+    maxY, _ := win.MaxYX()
+    entriesPerPage := (maxY - 2) / 4
+    startIdx := scrollPos
+    endIdx := startIdx + entriesPerPage
+    if endIdx > len(entries) {
+        endIdx = len(entries)
+    }
+
+    y := 1
+    for _, entry := range entries[startIdx:endIdx] {
+        if y >= maxY-1 {
+            break
+        }
+        win.MovePrint(y, 1, fmt.Sprintf("Title: %s", truncateString(entry.Title, width-8)))
+        y++
+        win.MovePrint(y, 1, fmt.Sprintf("Username: %s", truncateString(entry.Username, width-11)))
+        y++
+        password := strings.Repeat("*", len(entry.Password))
+        if showPasswords {
+            password = entry.Password
+        }
+        win.MovePrint(y, 1, fmt.Sprintf("Password: %s", password))
+        y++
+        if entry.URL != "" {
+            win.MovePrint(y, 1, fmt.Sprintf("URL: %s", truncateString(entry.URL, width-6)))
+            y++
+        }
+        win.MovePrint(y, 1, strings.Repeat("-", width-2))
+        y++
+    }
+
+    if len(entries) > entriesPerPage {
+        if scrollPos > 0 {
+            win.MovePrint(1, width-1, "↑")
+        }
+        if endIdx < len(entries) {
+            win.MovePrint(maxY-2, width-1, "↓")
+        }
+    }
+}
+
+func buildGroupHierarchy(group gokeepasslib.Group) *GroupNode {
+    // Debug logging to see group structure
+    log.Printf("Building group: %s with %d entries and %d subgroups",
+        group.Name, len(group.Entries), len(group.Groups))
+
+    node := &GroupNode{
+        Name:      group.Name,
+        Expanded:  true,  // Default to expanded to help debug
+        Entries:   make([]Entry, 0),
+        SubGroups: make([]*GroupNode, 0),
+    }
+
+    // Process entries
+    for _, entry := range group.Entries {
+        node.Entries = append(node.Entries, Entry{
+            Title:    entry.GetTitle(),
+            Username: entry.GetContent("UserName"),
+            Password: entry.GetPassword(),
+            URL:      entry.GetContent("URL"),
+            Notes:    entry.GetContent("Notes"),
+        })
+    }
+
+    // Process subgroups
+    for _, subGroup := range group.Groups {
+        childNode := buildGroupHierarchy(subGroup)
+        if childNode != nil {
+            childNode.Parent = node
+            node.SubGroups = append(node.SubGroups, childNode)
+        }
+    }
+
+    return node
+}
+
+func getString(win *goncurses.Window, y, x, maxLen int) string {
+	var sb strings.Builder
+	for {
+		ch := win.GetChar()
+		if ch == '\n' || ch == '\r' {
+			break
+		}
+		if ch == 127 || ch == 8 { // Backspace
+			if sb.Len() > 0 {
+				str := sb.String()
+				sb.Reset()
+				sb.WriteString(str[:len(str)-1])
+				win.MovePrint(y, x, strings.Repeat(" ", maxLen))
+				win.MovePrint(y, x, sb.String())
+			}
+		} else if sb.Len() < maxLen {
+			sb.WriteRune(rune(ch))
+			win.MovePrint(y, x, sb.String())
+		}
+		win.Refresh()
+	}
+	return sb.String()
+}
+func searchEntries(group *GroupNode, query string) []Entry {
+	var result []Entry
+	query = strings.ToLower(query)
+
+	for _, entry := range group.Entries {
+		if strings.Contains(strings.ToLower(entry.Title), query) ||
+			strings.Contains(strings.ToLower(entry.Username), query) ||
+			strings.Contains(strings.ToLower(entry.URL), query) ||
+			strings.Contains(strings.ToLower(entry.Notes), query) ||
+			strings.Contains(strings.ToLower(group.Name), query) {
+			result = append(result, entry)
+		}
+	}
+
+	for _, subGroup := range group.SubGroups {
+		result = append(result, searchEntries(subGroup, query)...)
+	}
+
+	return result
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }
 
 func main() {
@@ -42,35 +247,6 @@ func main() {
 		log.Fatal("Error reading password:", err)
 	}
 
-	app := tview.NewApplication()
-
-	// Create the layout with a title
-	flex := tview.NewFlex().SetDirection(tview.FlexRow)
-
-	// Add a title bar
-	titleBar := tview.NewTextView().
-		SetText("KeePass Database Viewer (ESC to exit)").
-		SetTextAlign(tview.AlignCenter).
-		SetTextColor(tcell.ColorYellow)
-
-	// Create main content area
-	contentFlex := tview.NewFlex().SetDirection(tview.FlexRow)
-	list := tview.NewList().
-		ShowSecondaryText(true).
-		SetHighlightFullLine(true).
-		SetMainTextColor(tcell.ColorWhite).
-		SetSelectedTextColor(tcell.ColorBlack).
-		SetSelectedBackgroundColor(tcell.ColorGreen)
-
-	details := tview.NewTextView().
-		SetDynamicColors(true).
-		SetRegions(true).
-		SetWordWrap(true).
-		SetTextColor(tcell.ColorWhite).
-		SetBorder(true).
-		SetTitle("Entry Details")
-
-	// Load and decode database
 	file, err := os.Open(os.Args[1])
 	if err != nil {
 		log.Fatal(err)
@@ -86,97 +262,168 @@ func main() {
 
 	db.UnlockProtectedEntries()
 
-	// Extract entries with group information
-	var entries []Entry
+	rootGroup := &GroupNode{Name: "Root", Expanded: true}
 	for _, group := range db.Content.Root.Groups {
-		entries = append(entries, extractEntriesWithGroup(group, group.Name)...)
+		subGroup := buildGroupHierarchy(group)
+		subGroup.Parent = rootGroup
+		rootGroup.SubGroups = append(rootGroup.SubGroups, subGroup)
 	}
 
-	// Populate list with meaningful information
-	for i, entry := range entries {
-		secondaryText := ""
-		if entry.Username != "" {
-			secondaryText = fmt.Sprintf("[%s] %s", entry.Group, entry.Username)
+	stdscr, err := goncurses.Init()
+	if err != nil {
+		log.Fatal("failed to initialize ncurses:", err)
+	}
+	defer goncurses.End()
+
+	goncurses.Raw(true)
+	goncurses.Echo(false)
+	goncurses.Cursor(0)
+	stdscr.Keypad(true)
+
+	if !goncurses.HasColors() {
+		log.Fatal("Terminal does not support colors")
+	}
+	goncurses.StartColor()
+	goncurses.InitPair(1, goncurses.C_WHITE, goncurses.C_BLUE)
+
+	maxY, maxX := stdscr.MaxYX()
+	listWidth := maxX / 3
+
+	groupWin, err := goncurses.NewWindow(maxY-4, listWidth, 1, 0)
+	if err != nil {
+		log.Fatal("failed to create group window:", err)
+	}
+
+	detailWin, err := goncurses.NewWindow(maxY-4, maxX-listWidth-1, 1, listWidth+1)
+	if err != nil {
+		log.Fatal("failed to create detail window:", err)
+	}
+
+	searchWin, err := goncurses.NewWindow(3, maxX, maxY-3, 0)
+	if err != nil {
+		log.Fatal("failed to create search window:", err)
+	}
+
+	stdscr.MovePrint(0, 0, "kplite [kdbx viewer] - (q: quit, s: search, arrows: navigate, enter: expand/collapse)")
+	stdscr.Refresh()
+
+	state := ViewState{
+        selectedIndex:   0,
+        entryScrollPos: 0,
+        searchQuery:    "",
+        inSearchMode:   false,
+        showPasswords:  false,
+        focusedPane: 	0,
+    }
+
+    // Update header to show new commands
+    stdscr.MovePrint(0, 0, "kplite [kdbx viewer] - (q: quit, s: search, p: toggle passwords, tab: switch focus, arrows: navigate, enter: expand/collapse)")
+	stdscr.Refresh()
+
+    // Main loop
+    for {
+		groupWin.Clear()
+		detailWin.Clear()
+		searchWin.Clear()
+
+		groupWin.Box(0, 0)
+		detailWin.Box(0, 0)
+		searchWin.Box(0, 0)
+
+		groupWin.MovePrint(0, 2, "Groups")
+		detailWin.MovePrint(0, 2, "Entries")
+		searchWin.MovePrint(0, 2, fmt.Sprintf("Search: %s", state.searchQuery))
+
+		visibleItems := getVisibleItems(rootGroup)
+		displayGroups(groupWin, visibleItems, state.selectedIndex)
+
+		var selectedGroup *GroupNode
+		if state.selectedIndex >= 0 && state.selectedIndex < len(visibleItems) {
+			selectedGroup = visibleItems[state.selectedIndex].Group
+		}
+
+		var entries []Entry
+		if state.inSearchMode && state.searchQuery != "" {
+			entries = searchEntries(rootGroup, state.searchQuery)
+		} else if selectedGroup != nil {
+			entries = selectedGroup.Entries
+		}
+
+		if state.focusedPane == 1 {
+			detailWin.AttrOn(goncurses.ColorPair(1))
 		} else {
-			secondaryText = fmt.Sprintf("[%s]", entry.Group)
+			groupWin.AttrOn(goncurses.ColorPair(1))
 		}
-		list.AddItem(entry.Title, secondaryText, rune('a'+i), nil)
-	}
 
-	// Handle list selection
-	list.SetSelectedFunc(func(index int, _ string, _ string, _ rune) {
-		entry := entries[index]
-		details.Clear()
-		fmt.Fprintf(details, "[yellow]Group:[white] %s\n\n", entry.Group)
-		fmt.Fprintf(details, "[yellow]Title:[white] %s\n", entry.Title)
-		fmt.Fprintf(details, "[yellow]Username:[white] %s\n", entry.Username)
-		fmt.Fprintf(details, "[yellow]Password:[white] %s\n", entry.Password)
-		if entry.URL != "" {
-			fmt.Fprintf(details, "[yellow]URL:[white] %s\n", entry.URL)
+		displayEntries(detailWin, entries, maxX-listWidth-3, state.entryScrollPos, state.showPasswords)
+
+		if state.focusedPane == 1 {
+			detailWin.AttrOff(goncurses.ColorPair(1))
+		} else {
+			groupWin.AttrOff(goncurses.ColorPair(1))
 		}
-		if entry.Notes != "" {
-			fmt.Fprintf(details, "\n[yellow]Notes:[white]\n%s\n", entry.Notes)
-		}
-	})
 
-	// Layout setup
-	flex.AddItem(titleBar, 1, 1, false).
-		AddItem(tview.NewFlex().
-			AddItem(list, 0, 1, true).
-			AddItem(details, 0, 2, false),
-			0, 8, true)
+		groupWin.Refresh()
+		detailWin.Refresh()
+		searchWin.Refresh()
 
-	// Input handling
-	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		switch event.Key() {
-		case tcell.KeyEsc:
-			app.Stop()
-		case tcell.KeyTab:
-			if list.HasFocus() {
-				app.SetFocus(details)
+		ch := stdscr.GetChar()
+		switch ch {
+		case 'q':
+			return
+		case 'p':
+			state.showPasswords = !state.showPasswords
+		case 's':
+			state.inSearchMode = !state.inSearchMode
+			if state.inSearchMode {
+				searchWin.MovePrint(1, 1, "Enter search query: ")
+				searchWin.Refresh()
+				goncurses.Echo(true)
+				state.searchQuery = getString(searchWin, 1, 19, 30)
+				goncurses.Echo(false)
+				state.entryScrollPos = 0
 			} else {
-				app.SetFocus(list)
+				state.searchQuery = ""
+				state.entryScrollPos = 0
 			}
-		}
-		return event
-	})
-
-	if err := app.SetRoot(flex, true).EnableMouse(true).Run(); err != nil {
-		log.Fatal(err)
-	}
-}
-
-func extractEntriesWithGroup(group gokeepasslib.Group, groupPath string) []Entry {
-	var entries []Entry
-
-	for _, entry := range group.Entries {
-		// Skip empty entries
-		if entry.GetTitle() == "" {
-			continue
-		}
-
-		e := Entry{
-			Title:    entry.GetTitle(),
-			Username: entry.GetContent("UserName"),
-			Password: entry.GetPassword(),
-			URL:      entry.GetContent("URL"),
-			Notes:    entry.GetContent("Notes"),
-			Group:    groupPath,
-		}
-		entries = append(entries, e)
-	}
-
-	// Recursively process subgroups
-	for _, subgroup := range group.Groups {
-		newGroupPath := groupPath
-		if subgroup.Name != "" {
-			if newGroupPath != "" {
-				newGroupPath += " / "
+		case goncurses.KEY_UP:
+			if state.focusedPane == 0 { // Groups
+				if state.selectedIndex > 0 {
+					state.selectedIndex--
+				}
+			} else { // Entries
+				if state.entryScrollPos > 0 {
+					state.entryScrollPos--
+				}
 			}
-			newGroupPath += subgroup.Name
-		}
-		entries = append(entries, extractEntriesWithGroup(subgroup, newGroupPath)...)
-	}
+		case goncurses.KEY_DOWN:
+			if state.focusedPane == 0 { // Groups
+				if state.selectedIndex < len(visibleItems)-1 {
+					state.selectedIndex++
+				}
+			} else { // Entries
+				maxY, _ := detailWin.MaxYX()
+				entriesPerPage := (maxY - 2) / 4
+				if len(entries) > entriesPerPage && state.entryScrollPos < len(entries)-entriesPerPage {
+					state.entryScrollPos++
+				}
+			}
+		case goncurses.KEY_ENTER, '\r':
+			if state.focusedPane == 0 && state.selectedIndex >= 0 && state.selectedIndex < len(visibleItems) {
+				selectedGroup = visibleItems[state.selectedIndex].Group
+				selectedGroup.Expanded = !selectedGroup.Expanded
 
-	return entries
+				// Expand all parent groups to ensure visibility
+				parent := selectedGroup.Parent
+				for parent != nil {
+					parent.Expanded = true
+					parent = parent.Parent
+				}
+
+				state.entryScrollPos = 0
+			}
+		case '\t':
+			state.focusedPane = (state.focusedPane + 1) % 2
+		}
+	}
 }
