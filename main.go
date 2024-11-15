@@ -224,25 +224,21 @@ func getString(win *goncurses.Window, y, x, maxLen int) string {
 	}
 	return sb.String()
 }
-func searchEntries(group *GroupNode, query string) []Entry {
-	var result []Entry
-	query = strings.ToLower(query)
 
-	for _, entry := range group.Entries {
-		if strings.Contains(strings.ToLower(entry.Title), query) ||
-			strings.Contains(strings.ToLower(entry.Username), query) ||
-			strings.Contains(strings.ToLower(entry.URL), query) ||
-			strings.Contains(strings.ToLower(entry.Notes), query) ||
-			strings.Contains(strings.ToLower(group.Name), query) {
-			result = append(result, entry)
-		}
-	}
+func searchEntries(group *GroupNode, query string) []*GroupNode {
+    var result []*GroupNode
+    query = strings.ToLower(query)
 
-	for _, subGroup := range group.SubGroups {
-		result = append(result, searchEntries(subGroup, query)...)
-	}
+    if strings.Contains(strings.ToLower(group.Name), query) {
+        result = append(result, group)
+    }
 
-	return result
+    for _, subGroup := range group.SubGroups {
+        subResult := searchEntries(subGroup, query)
+        result = append(result, subResult...)
+    }
+
+    return result
 }
 
 func truncateString(s string, maxLen int) string {
@@ -300,7 +296,7 @@ func main() {
 		log.Fatal("Terminal does not support colors")
 	}
 	goncurses.StartColor()
-	goncurses.InitPair(1, goncurses.C_WHITE, goncurses.C_BLUE)
+	goncurses.InitPair(1, goncurses.C_RED, goncurses.C_BLUE)
 
 	maxY, maxX := stdscr.MaxYX()
 	listWidth := maxX / 3
@@ -333,9 +329,8 @@ func main() {
         focusedPane:    0,
     }
 
-
     // Update header to show new commands
-    stdscr.MovePrint(0, 0, "kplite [kdbx viewer] - (q: quit, [SPC]: toggle passwords, [/]: search, enter: expand/collapse)")
+    stdscr.MovePrint(0, 0, "kplite [kdbx viewer] - (q: quit, [space]: toggle passwords, [/]: search, enter: expand/collapse)")
 	stdscr.Refresh()
 
     // Main loop
@@ -362,11 +357,39 @@ func main() {
 
         var entries []Entry
         if state.inSearchMode && state.searchQuery != "" {
-            entries = searchEntries(rootGroup, state.searchQuery)
-            entries = entries[state.entryScrollPos:]
+            matchingGroups := searchEntries(rootGroup, state.searchQuery)
+            if len(matchingGroups) > 0 {
+                // Set the selected index to the first matching group
+                state.selectedIndex = -1
+                for i, item := range visibleItems {
+                    for _, group := range matchingGroups {
+                        if item.Group == group {
+                            state.selectedIndex = i
+                            break
+                        }
+                    }
+                    if state.selectedIndex != -1 {
+                        break
+                    }
+                }
+
+                // Expand all the parent groups of the first matching group
+                currentGroup := matchingGroups[0]
+                for currentGroup != nil {
+                    currentGroup.Expanded = true
+                    currentGroup = currentGroup.Parent
+                }
+
+                // Display the entries for the first matching group
+                entries = matchingGroups[0].Entries
+                state.entryScrollPos = 0
+            } else {
+                entries = []Entry{}
+            }
         } else if selectedGroup != nil {
             entries = selectedGroup.Entries[state.entryScrollPos:]
         }
+
         detailWin.MovePrint(0, 2, selectedGroup.Name)
 
         if state.focusedPane == 1 {
@@ -388,6 +411,7 @@ func main() {
         searchWin.Refresh()
 
         ch := stdscr.GetChar()
+
         switch ch {
         case 'q':
             return
