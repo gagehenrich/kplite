@@ -26,7 +26,7 @@ type GroupNode struct {
 	SubGroups []*GroupNode
 	Expanded  bool
 	Parent    *GroupNode
-	Index     int 				// track absolute group number
+	Index     int
 }
 
 type VisibleItem struct {
@@ -170,6 +170,10 @@ func displayEntries(win *goncurses.Window, entries []Entry, width int, scrollPos
 	}
 }
 
+func editEntry() {
+
+}
+
 func expandCollapseGroups(group *GroupNode) {
 	if group == nil {
 		return
@@ -184,9 +188,6 @@ func expandCollapseGroups(group *GroupNode) {
 }
 
 func buildGroupHierarchy(group gokeepasslib.Group, groupCounter *int) *GroupNode {
-	// Debug logging to see group structure
-	//log.Printf("Building group: %s with %d entries and %d subgroups",
-	//    group.Name, len(group.Entries), len(group.Groups))
 
 	node := &GroupNode{
 		Name:      group.Name,
@@ -365,7 +366,7 @@ func main() {
 		log.Fatal("Terminal does not support colors")
 	}
 	goncurses.StartColor()
-	goncurses.InitPair(1, goncurses.C_WHITE, goncurses.C_BLUE)
+	goncurses.InitPair(1, goncurses.C_BLACK, goncurses.C_GREEN)
 
 	maxY, maxX := stdscr.MaxYX()
 	listWidth := maxX / 3
