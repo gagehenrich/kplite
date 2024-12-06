@@ -26,6 +26,7 @@ type GroupNode struct {
 	SubGroups []*GroupNode
 	Expanded  bool
 	Parent    *GroupNode
+    Index  int  // track absolute group number
 }
 
 type VisibleItem struct {
@@ -166,7 +167,19 @@ func displayEntries(win *goncurses.Window, entries []Entry, width int, scrollPos
     }
 }
 
-func buildGroupHierarchy(group gokeepasslib.Group) *GroupNode {
+func expandAllGroups(group *GroupNode) {
+    if group == nil {
+        return
+    }
+
+    group.Expanded = true
+
+    for _, subGroup := range group.SubGroups {
+        expandAllGroups(subGroup)
+    }
+}
+
+func buildGroupHierarchy(group gokeepasslib.Group, groupCounter *int) *GroupNode {
     // Debug logging to see group structure
     log.Printf("Building group: %s with %d entries and %d subgroups",
         group.Name, len(group.Entries), len(group.Groups))
@@ -176,7 +189,9 @@ func buildGroupHierarchy(group gokeepasslib.Group) *GroupNode {
         Expanded:  false,
         Entries:   make([]Entry, 0),
         SubGroups: make([]*GroupNode, 0),
+        Index: *groupCounter,
     }
+    (*groupCounter)++
 
     // Process entries
     for _, entry := range group.Entries {
@@ -191,7 +206,7 @@ func buildGroupHierarchy(group gokeepasslib.Group) *GroupNode {
 
     // Process subgroups
     for _, subGroup := range group.Groups {
-        childNode := buildGroupHierarchy(subGroup)
+        childNode := buildGroupHierarchy(subGroup, groupCounter)
         if childNode != nil {
             childNode.Parent = node
             node.SubGroups = append(node.SubGroups, childNode)
@@ -225,20 +240,62 @@ func getString(win *goncurses.Window, y, x, maxLen int) string {
 	return sb.String()
 }
 
-func searchEntries(group *GroupNode, query string) []*GroupNode {
-    var result []*GroupNode
+func searchEntries(root *GroupNode, query string) []*GroupNode {
+    query = strings.ToLower(query)
+    var matchingGroups []*GroupNode
+
+    var search func(*GroupNode)
+    search = func(group *GroupNode) {
+        // Check entries in current group
+        for _, entry := range group.Entries {
+            if strings.Contains(strings.ToLower(entry.Title), query) ||
+               strings.Contains(strings.ToLower(entry.Username), query) ||
+               strings.Contains(strings.ToLower(entry.URL), query) ||
+               strings.Contains(strings.ToLower(entry.Notes), query) {
+                matchingGroups = append(matchingGroups, group)
+                break
+            }
+        }
+
+        // Recursively search subgroups
+        for _, subGroup := range group.SubGroups {
+            search(subGroup)
+        }
+    }
+
+    search(root)
+    return matchingGroups
+}
+
+func searchGroups(root *GroupNode, query string) (*GroupNode, int) {
+    expandAllGroups(root)
     query = strings.ToLower(query)
 
-    if strings.Contains(strings.ToLower(group.Name), query) {
-        result = append(result, group)
+    var search func(*GroupNode) *GroupNode
+    search = func(group *GroupNode) *GroupNode {
+        if group == nil {
+            return nil
+        }
+
+        if strings.Contains(strings.ToLower(group.Name), query) {
+            return group
+        }
+
+        for _, subGroup := range group.SubGroups {
+            found := search(subGroup)
+            if found != nil {
+                return found
+            }
+        }
+
+        return nil
     }
 
-    for _, subGroup := range group.SubGroups {
-        subResult := searchEntries(subGroup, query)
-        result = append(result, subResult...)
+    foundGroup := search(root)
+    if foundGroup != nil {
+        return foundGroup, foundGroup.Index
     }
-
-    return result
+    return nil, -1
 }
 
 func truncateString(s string, maxLen int) string {
@@ -246,6 +303,13 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+func max(a, b int) int {
+    if a > b {
+        return a
+    }
+    return b
 }
 
 func main() {
@@ -275,8 +339,9 @@ func main() {
 	db.UnlockProtectedEntries()
 
 	rootGroup := &GroupNode{Name: "Root", Expanded: true}
+	groupCounter := 0
 	for _, group := range db.Content.Root.Groups {
-		subGroup := buildGroupHierarchy(group)
+		subGroup := buildGroupHierarchy(group, &groupCounter)
 		subGroup.Parent = rootGroup
 		rootGroup.SubGroups = append(rootGroup.SubGroups, subGroup)
 	}
@@ -296,7 +361,7 @@ func main() {
 		log.Fatal("Terminal does not support colors")
 	}
 	goncurses.StartColor()
-	goncurses.InitPair(1, goncurses.C_RED, goncurses.C_BLUE)
+	goncurses.InitPair(1, goncurses.C_WHITE, goncurses.C_BLUE)
 
 	maxY, maxX := stdscr.MaxYX()
 	listWidth := maxX / 3
@@ -343,9 +408,9 @@ func main() {
         detailWin.Box(0, 0)
         searchWin.Box(0, 0)
 
-        groupWin.MovePrint(0, 2, "Groups")
+        groupWin.MovePrint(0, 2, " Groups ")
         detailWin.MovePrint(0, 2, "")
-        searchWin.MovePrint(0, 2, fmt.Sprintf("Search: %s", state.searchQuery))
+        searchWin.MovePrint(0, 2, fmt.Sprintf(" Search: %s", state.searchQuery))
 
         visibleItems := getVisibleItems(rootGroup)
         displayGroups(groupWin, visibleItems, state.selectedIndex, state.groupScrollPos)
@@ -390,7 +455,7 @@ func main() {
             entries = selectedGroup.Entries[state.entryScrollPos:]
         }
 
-        detailWin.MovePrint(0, 2, selectedGroup.Name)
+        detailWin.MovePrint(0, 2, " ", selectedGroup.Name, " ")
 
         if state.focusedPane == 1 {
             detailWin.AttrOn(goncurses.ColorPair(1))
@@ -413,23 +478,73 @@ func main() {
         ch := stdscr.GetChar()
 
         switch ch {
-        case 'q':
+        case 'e': // edit (placeholder)
+
+        case 'f': // expand all groups
+        	expandAllGroups(rootGroup)
+        case 'g': // go to top
+            if state.focusedPane == 0 {
+                state.selectedIndex = 0
+                state.groupScrollPos = 0
+            } else {
+                state.entryScrollPos = 0
+            }
+        case 'G': // go to bottom
+	        if state.focusedPane == 0 {
+	            state.selectedIndex = len(visibleItems) - 1
+
+	            // Adjust group scroll to show the last item
+	            maxY, _ := groupWin.MaxYX()
+	            visibleLines := maxY - 2
+	            state.groupScrollPos = max(0, len(visibleItems) - visibleLines)
+	        } else {
+	            maxY, _ := detailWin.MaxYX()
+	            entriesPerPage := (maxY - 2) / 4
+	            state.entryScrollPos = max(0, len(entries) - entriesPerPage)
+	        }
+        case 'q': // go to top
             return
         case ' ':
             state.showPasswords = !state.showPasswords
         case '/':
-            state.inSearchMode = !state.inSearchMode
-            if state.inSearchMode {
-                searchWin.MovePrint(1, 1, "/ ")
-                searchWin.Refresh()
-                goncurses.Echo(true)
-                state.searchQuery = getString(searchWin, 1, 1, 30)
-                goncurses.Echo(false)
-                state.entryScrollPos = 0
-            } else {
-                state.searchQuery = ""
-                state.entryScrollPos = 0
-            }
+	        state.inSearchMode = true
+	           if state.inSearchMode {
+	               searchWin.MovePrint(1, 1, "/ ")
+	               searchWin.Refresh()
+	               goncurses.Echo(true)
+	               state.searchQuery = getString(searchWin, 1, 1, 30)
+	               goncurses.Echo(false)
+
+					group, Index := searchGroups(rootGroup, state.searchQuery)
+				    if group != nil {
+				        // Expand all parents
+				        currentGroup := group
+				        for currentGroup != nil {
+				            currentGroup.Expanded = true
+				            currentGroup = currentGroup.Parent
+				        }
+
+				        // Regenerate visible items
+				        visibleItems = getVisibleItems(rootGroup)
+
+				        // Calculate scroll position based on group number
+				        maxY, _ := groupWin.MaxYX()
+				        visibleLines := maxY - 2
+				        state.groupScrollPos = max(0, Index - visibleLines/2)
+
+				        // Find and select the group
+						state.selectedIndex = group.Index + 1
+				        // for i, item := range visibleItems {
+				        //     if item.Group == group {
+				        //         state.selectedIndex = i
+				        //         break
+				        //     }
+				        // }
+		           } else {
+		               state.searchQuery = ""
+		           }
+				}
+	   	        state.inSearchMode = false // exit search mode
         case goncurses.KEY_LEFT:
             state.focusedPane = 0
         case goncurses.KEY_RIGHT:
