@@ -12,6 +12,8 @@ import (
 	"golang.org/x/term"
 )
 
+const version = "kplite - v00.01"
+
 type Entry struct {
 	Title    string
 	Username string
@@ -46,7 +48,6 @@ type ViewState struct {
 }
 
 var expandAllGroups = false
-
 
 func getPassword() (string, error) {
 	fmt.Print("Enter database password: ")
@@ -366,7 +367,9 @@ func main() {
 		log.Fatal("Terminal does not support colors")
 	}
 	goncurses.StartColor()
-	goncurses.InitPair(1, goncurses.C_BLACK, goncurses.C_GREEN)
+	goncurses.InitPair(1, goncurses.C_BLACK, goncurses.C_GREEN)		// highlighted selection
+	goncurses.InitPair(2, goncurses.C_WHITE, goncurses.C_GREEN) 	// help window border
+	goncurses.InitPair(3, goncurses.C_GREEN, goncurses.C_BLACK) 	// help window text
 
 	maxY, maxX := stdscr.MaxYX()
 	listWidth := maxX / 3
@@ -386,9 +389,6 @@ func main() {
 		log.Fatal("failed to create search window:", err)
 	}
 
-	stdscr.MovePrint(0, 0, "kplite [kdbx viewer] - (q: quit, arrows: navigate, enter: expand/collapse)")
-	stdscr.Refresh()
-
 	state := ViewState{
 		selectedIndex:  0,
 		entryScrollPos: 0,
@@ -399,8 +399,7 @@ func main() {
 		focusedPane:    0,
 	}
 
-	// Update header to show new commands
-	stdscr.MovePrint(0, 0, "kplite [kdbx viewer] - (q: quit, [space]: toggle passwords, enter: expand/collapse current group, f: expand/collapse all)")
+	stdscr.MovePrint(0, maxX-16, version)
 	stdscr.Refresh()
 
 	// Main loop
@@ -415,7 +414,7 @@ func main() {
 
 		groupWin.MovePrint(0, 2, " Groups ")
 		detailWin.MovePrint(0, 2, "")
-		searchWin.MovePrint(0, 2, fmt.Sprintf(" Search: %s", state.searchQuery))
+		searchWin.MovePrint(0, 2, fmt.Sprintf(" Search: %s ", state.searchQuery))
 
 		visibleItems := getVisibleItems(rootGroup)
 		displayGroups(groupWin, visibleItems, state.selectedIndex, state.groupScrollPos)
@@ -463,17 +462,17 @@ func main() {
 		detailWin.MovePrint(0, 2, " ", selectedGroup.Name, " ")
 
 		if state.focusedPane == 1 {
-			detailWin.AttrOn(goncurses.ColorPair(1))
+			detailWin.AttrOn(goncurses.ColorPair(2))
 		} else {
-			groupWin.AttrOn(goncurses.ColorPair(1))
+			groupWin.AttrOn(goncurses.ColorPair(2))
 		}
 
 		displayEntries(detailWin, entries, maxX-listWidth-3, 0, state.showPasswords)
 
 		if state.focusedPane == 1 {
-			detailWin.AttrOff(goncurses.ColorPair(1))
+			detailWin.AttrOff(goncurses.ColorPair(3))
 		} else {
-			groupWin.AttrOff(goncurses.ColorPair(1))
+			groupWin.AttrOff(goncurses.ColorPair(3))
 		}
 
 		groupWin.Refresh()
@@ -483,6 +482,47 @@ func main() {
 		ch := stdscr.GetChar()
 
 		switch ch {
+		case 'h': // help
+		    maxY, maxX := stdscr.MaxYX()
+		    height, width := 10, 40
+		    startY := (maxY - height) / 2
+		    startX := (maxX - width) / 2
+
+		    helpWin, err := goncurses.NewWindow(height, width, startY, startX)
+		    if err != nil {
+		        log.Fatalf("Error creating help window: %v", err)
+		    }
+		    defer helpWin.Delete()
+
+		    helpWin.AttrOn(goncurses.ColorPair(2))
+		    helpWin.Box(0, 0)
+		    helpWin.MovePrint(0, (width/2)-5, " Help ")
+		    helpWin.AttrOff(goncurses.ColorPair(2))
+
+		    helpText := []string{
+		        "<tab>      : switch pane",
+		        "<up/down>  : scroll",
+		        "<space>    : toggle password",
+		        "<e>        : edit",
+		        "<f>        : collapse/expand all",
+		        "</>        : search",
+		        "<q>        : quit",
+		    }
+
+		    // Add the help text to the window with color
+		    helpWin.AttrOn(goncurses.ColorPair(3))
+		    for i, line := range helpText {
+		        helpWin.MovePrint(2+i, 2, line)
+		    }
+		    helpWin.AttrOff(goncurses.ColorPair(3))
+
+		    // Refresh the window to display content
+		    helpWin.Refresh()
+
+		    // Wait for a key press to close the help dialog
+		    helpWin.GetChar()
+		    stdscr.Clear()
+		    stdscr.Refresh()
 		case 'e': // edit (placeholder)
 
 		case 'f': // expand/collapse Group pane
@@ -520,7 +560,7 @@ func main() {
 			state.inSearchMode = true
 			expandAllGroups = true
 			if state.inSearchMode {
-				searchWin.MovePrint(1, 1, "/ ")
+				searchWin.MovePrint(1, 1, "/")
 				searchWin.Refresh()
 				goncurses.Echo(true)
 				state.searchQuery = getString(searchWin, 1, 1, 30)
@@ -550,10 +590,13 @@ func main() {
 				}
 			}
 			state.inSearchMode = false // exit search mode
-		case goncurses.KEY_LEFT:
-			state.focusedPane = 0
-		case goncurses.KEY_RIGHT:
-			state.focusedPane = 1
+		case '\t':
+			if state.focusedPane == 0 {
+				state.focusedPane = 1
+			} else {
+				state.focusedPane = 0
+		}
+
 		case goncurses.KEY_UP:
 			if state.focusedPane == 0 { // Groups
 				if state.selectedIndex > 0 {
